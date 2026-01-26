@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>EEG Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #ffffff;
+  color: #333;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  padding: 20px;
+}
+
+h2 {
+  margin-bottom: 15px;
+  color: #2c3e50;
+  text-align: center;
+}
+
+.controls {
+  text-align: center;
+  margin-bottom: 20px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.status {
+  display: inline-block;
+  margin-left: 15px;
+  padding: 8px 15px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.status.connected {
+  background: #d4edda;
+  color: #155724;
+}
+
+.status.disconnected {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.status.recording {
+  background: #fff3cd;
+  color: #856404;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+button {
+  background: #007bff;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  margin: 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+button:hover {
+  background: #0056b3;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+button.recording {
+  background: #dc3545;
+}
+
+button.recording:hover {
+  background: #c82333;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.chart-container {
+  background: white;
+  border-radius: 8px;
+  padding: 15px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transition: transform 0.2s ease;
+}
+
+.chart-container:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.chart-title {
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #2c3e50;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 1px;
+  border-bottom: 2px solid #007bff;
+  padding-bottom: 5px;
+}
+
+.chart-value {
+  font-size: 18px;
+  color: #007bff;
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+
+canvas {
+  background: #f8f9fa;
+  border-radius: 4px;
+}
+
+.data-panel {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  max-width: 1400px;
+  margin: 0 auto 20px auto;
+}
+
+.data-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.data-item {
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 5px;
+  border-left: 3px solid #007bff;
+}
+
+.data-item label {
+  font-size: 11px;
+  color: #6c757d;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 5px;
+}
+
+.data-item value {
+  font-size: 20px;
+  font-weight: bold;
+  color: #2c3e50;
+}
+</style>
+</head>
+
+<body>
+<h2>🧠 EEG Live Dashboard</h2>
+
+<div class="controls">
+  <button id="recBtn" onclick="toggleRecording()">▶ Start Recording</button>
+  <button onclick="downloadCSV()">⬇ Download CSV</button>
+  <button onclick="clearData()">🗑 Clear Data</button>
+  <span id="wsStatus" class="status disconnected">⚫ Disconnected</span>
+  <span id="recStatus" class="status" style="display:none;"></span>
+</div>
+
+<div class="data-panel">
+  <h3 style="margin-bottom:10px; color:#2c3e50;">Current Values</h3>
+  <div class="data-row">
+    <div class="data-item">
+      <label>Signal Quality</label>
+      <value id="val-sig">--</value>
+    </div>
+    <div class="data-item">
+      <label>Attention</label>
+      <value id="val-att">--</value>
+    </div>
+    <div class="data-item">
+      <label>Meditation</label>
+      <value id="val-med">--</value>
+    </div>
+    <div class="data-item">
+      <label>Raw EEG</label>
+      <value id="val-raw">--</value>
+    </div>
+  </div>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<script>
+const WS_URL = "ws://10.131.191.211:81"; // ⚠️ CHANGE THIS TO YOUR ESP32 IP
+
+const dataStore = {};
+const charts = {};
+let recording = false;
+let csvData = "timestamp,signal,attention,meditation,raw,delta,theta,lowAlpha,highAlpha,lowBeta,highBeta,lowGamma,midGamma\n";
+let ws = null;
+let reconnectInterval = null;
+
+const bands = [
+  {key: "delta", label: "Delta (0.5-3 Hz)", color: "#8e44ad"},
+  {key: "theta", label: "Theta (4-7 Hz)", color: "#3498db"},
+  {key: "la", label: "Low Alpha (8-9 Hz)", color: "#1abc9c"},
+  {key: "ha", label: "High Alpha (10-12 Hz)", color: "#2ecc71"},
+  {key: "lb", label: "Low Beta (13-17 Hz)", color: "#f39c12"},
+  {key: "hb", label: "High Beta (18-30 Hz)", color: "#e74c3c"},
+  {key: "lg", label: "Low Gamma (31-40 Hz)", color: "#c0392b"},
+  {key: "mg", label: "Mid Gamma (41-50 Hz)", color: "#e67e22"}
+];
+
+// Create charts
+bands.forEach(band => {
+  const container = document.createElement("div");
+  container.className = "chart-container";
+  
+  const title = document.createElement("div");
+  title.className = "chart-title";
+  title.textContent = band.label;
+  
+  const value = document.createElement("div");
+  value.className = "chart-value";
+  value.id = `val-${band.key}`;
+  value.textContent = "0";
+  
+  const canvas = document.createElement("canvas");
+  
+  container.appendChild(title);
+  container.appendChild(value);
+  container.appendChild(canvas);
+  grid.appendChild(container);
+
+  dataStore[band.key] = {
+    labels: [],
+    datasets: [{
+      label: band.label,
+      data: [],
+      borderColor: band.color,
+      backgroundColor: band.color + "20",
+      borderWidth: 2,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.4
+    }]
+  };
+
+  charts[band.key] = new Chart(canvas, {
+    type: "line",
+    data: dataStore[band.key],
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        x: { display: false },
+        y: { 
+          beginAtZero: true,
+          grid: { color: '#e0e0e0' }
+        }
+      }
+    }
+  });
+});
+
+// WebSocket connection
+function connectWebSocket() {
+  ws = new WebSocket(WS_URL);
+  
+  ws.onopen = () => {
+    console.log("WebSocket connected!");
+    document.getElementById("wsStatus").textContent = "🟢 Connected";
+    document.getElementById("wsStatus").className = "status connected";
+    if (reconnectInterval) {
+      clearInterval(reconnectInterval);
+      reconnectInterval = null;
+    }
+  };
+  
+  ws.onclose = () => {
+    console.log("WebSocket disconnected");
+    document.getElementById("wsStatus").textContent = "🔴 Disconnected";
+    document.getElementById("wsStatus").className = "status disconnected";
+    
+    // Auto-reconnect every 3 seconds
+    if (!reconnectInterval) {
+      reconnectInterval = setInterval(() => {
+        console.log("Attempting to reconnect...");
+        connectWebSocket();
+      }, 3000);
+    }
+  };
+  
+  ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
+  };
+  
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      const timestamp = Date.now();
+      
+      // Update current values
+      document.getElementById("val-sig").textContent = data.sig || "--";
+      document.getElementById("val-att").textContent = data.att || "--";
+      document.getElementById("val-med").textContent = data.med || "--";
+      document.getElementById("val-raw").textContent = data.raw || "--";
+      
+      // Update charts
+      bands.forEach(band => {
+        const value = data[band.key] || 0;
+        
+        // Update value display
+        document.getElementById(`val-${band.key}`).textContent = value.toLocaleString();
+        
+        // Update chart data
+        dataStore[band.key].labels.push("");
+        dataStore[band.key].datasets[0].data.push(value);
+        
+        // Keep only last 50 points
+        if (dataStore[band.key].datasets[0].data.length > 50) {
+          dataStore[band.key].labels.shift();
+          dataStore[band.key].datasets[0].data.shift();
+        }
+        
+        charts[band.key].update();
+      });
+      
+      // Record to CSV if recording
+      if (recording) {
+        const row = `${timestamp},${data.sig},${data.att},${data.med},${data.raw},${data.delta},${data.theta},${data.la},${data.ha},${data.lb},${data.hb},${data.lg},${data.mg}\n`;
+        csvData += row;
+      }
+    } catch (error) {
+      console.error("Error parsing WebSocket message:", error);
+    }
+  };
+}
+
+// Toggle recording
+function toggleRecording() {
+  recording = !recording;
+  const btn = document.getElementById("recBtn");
+  const status = document.getElementById("recStatus");
+  
+  if (recording) {
+    btn.textContent = "⏸ Stop Recording";
+    btn.className = "recording";
+    status.textContent = "🔴 Recording...";
+    status.className = "status recording";
+    status.style.display = "inline-block";
+    console.log("Recording started");
+  } else {
+    btn.textContent = "▶ Start Recording";
+    btn.className = "";
+    status.style.display = "none";
+    console.log("Recording stopped");
+  }
+}
+
+// Download CSV
+function downloadCSV() {
+  if (csvData.split('\n').length <= 2) {
+    alert("No data to download. Start recording first!");
+    return;
+  }
+  
+  const blob = new Blob([csvData], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `eeg_data_${Date.now()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  console.log("CSV downloaded");
+}
+
+// Clear data
+function clearData() {
+  if (confirm("Clear all recorded data?")) {
+    csvData = "timestamp,signal,attention,meditation,raw,delta,theta,lowAlpha,highAlpha,lowBeta,highBeta,lowGamma,midGamma\n";
+    
+    // Clear charts
+    bands.forEach(band => {
+      dataStore[band.key].labels = [];
+      dataStore[band.key].datasets[0].data = [];
+      charts[band.key].update();
+    });
+    
+    console.log("Data cleared");
+  }
+}
+
+// Initialize connection
+connectWebSocket();
+</script>
+</body>
+</html>
