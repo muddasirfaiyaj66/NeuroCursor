@@ -16,7 +16,7 @@ import glob
 import os
 
 # Configuration
-ESP32_IP = "10.131.191.211"  # ⚠️ CHANGE THIS
+ESP32_IP = "NeuroCursor-esp.local"  # ⚠️ CHANGE THIS
 WS_PORT = 81
 WS_URL = f"ws://{ESP32_IP}:{WS_PORT}"
 
@@ -29,6 +29,11 @@ REST_TIME = 2     # Increased seconds rest between trials
 # Current EEG data (latest)
 current_data = {
     "sig": 200, "att": 0, "med": 0, "raw": 0,
+    "delta": 0, "theta": 0, "la": 0, "ha": 0,
+    "lb": 0, "hb": 0, "lg": 0, "mg": 0
+}
+baseline_data = {
+    "att": 50, "med": 50, "raw": 0,
     "delta": 0, "theta": 0, "la": 0, "ha": 0,
     "lb": 0, "hb": 0, "lg": 0, "mg": 0
 }
@@ -141,6 +146,11 @@ class TrainingApp:
         self.samples_var = tk.IntVar(value=100) # Increased default
         tk.Scale(settings_frame, from_=10, to=200, orient="horizontal", variable=self.samples_var, bg="white", length=150).grid(row=1, column=1, padx=10, pady=5)
         
+        self.calibrate_btn = tk.Button(settings_frame, text="⚖️ CALIBRATE", 
+                                     font=("Segoe UI", 9, "bold"), bg="#34495e", fg="white",
+                                     command=self.calibrate_baseline)
+        self.calibrate_btn.grid(row=0, column=3, padx=5, pady=5)
+
         tk.Label(settings_frame, text="Focus Time (s):", font=("Segoe UI", 10), bg="white").grid(row=1, column=2, padx=10, pady=5)
         self.time_var = tk.IntVar(value=5)
         tk.Scale(settings_frame, from_=2, to=10, orient="horizontal", variable=self.time_var, bg="white", length=150).grid(row=1, column=3, padx=10, pady=5)
@@ -359,11 +369,46 @@ class TrainingApp:
             messagebox.showwarning("Connection", "Not connected to sensor!")
             return
         
+        # Artifact check for manual click too? Maybe lenient.
         self.collect_sample("CLICK")
         # Visual feedback for manual click
         original_bg = self.click_button.cget("bg")
         self.click_button.config(bg="#d35400")
         self.root.after(200, lambda: self.click_button.config(bg=original_bg))
+    
+    def calibrate_baseline(self):
+        """Record baseline for 10 seconds"""
+        if not ws_connected:
+            messagebox.showerror("Error", "Connect to sensor first!")
+            return
+            
+        self.calibrate_btn.config(text="⏳ Calibrating...", state="disabled")
+        threading.Thread(target=self._run_calibration, daemon=True).start()
+
+    def _run_calibration(self):
+        """Background calibration loop"""
+        global baseline_data
+        temp_data = []
+        start_time = time.time()
+        
+        while time.time() - start_time < 10:
+            if current_data["sig"] < 50: # Only good data
+                with data_lock:
+                    temp_data.append(current_data.copy())
+            time.sleep(0.1)
+        
+        if len(temp_data) > 0:
+            # Calculate averages
+            keys = ["att", "med", "delta", "theta", "la", "ha", "lb", "hb", "lg", "mg"]
+            for k in keys:
+                values = [d[k] for d in temp_data]
+                baseline_data[k] = sum(values) / len(values)
+            
+            self.root.after(0, lambda: messagebox.showinfo("Calibration", "Baseline set! normalized data will be saved."))
+        else:
+            self.root.after(0, lambda: messagebox.showwarning("Calibration", "Failed - check signal quality"))
+            
+        self.root.after(0, lambda: self.calibrate_btn.config(text="⚖️ CALIBRATE", state="normal"))
     
     def training_loop(self, sequence):
         """Main training loop with auto-pause between blocks"""
@@ -457,7 +502,27 @@ class TrainingApp:
         """Collect one training sample"""
         global training_data
         
+        # 1. Artifact Rejection
+        if current_data["sig"] > 50:
+            # print("Skipping poor signal sample")
+            return
+
         with data_lock:
+            # 2. Feature Expansion (Ratios)
+            # Safe division to avoid zero division
+            theta = current_data["theta"]
+            alpha = current_data["la"] + current_data["ha"]
+            beta = current_data["lb"] + current_data["hb"]
+            gamma = current_data["lg"] + current_data["mg"]
+            
+            # Derived metrics
+            # 1. Arousal/Focus (Beta/Alpha)
+            beta_alpha = beta / (alpha + 1)
+            # 2. Relaxation (Alpha/Theta)
+            alpha_theta = alpha / (theta + 1)
+            # 3. Cognitive Load/Engagement (Beta / (Alpha + Theta))
+            engagement = beta / (alpha + theta + 1)
+            
             sample = {
                 "timestamp": time.time(),
                 "direction": direction,
@@ -473,6 +538,14 @@ class TrainingApp:
                 "high_beta": current_data["hb"],
                 "low_gamma": current_data["lg"],
                 "mid_gamma": current_data["mg"],
+                # New Features
+                "beta_alpha_ratio": beta_alpha,
+                "alpha_theta_ratio": alpha_theta,
+                "engagement_ratio": engagement,
+                # Normalized (against calibration)
+                "norm_att": current_data["att"] - baseline_data["att"],
+                "norm_med": current_data["med"] - baseline_data["med"],
+                "norm_beta": beta - (baseline_data["lb"] + baseline_data["hb"])
             }
             training_data.append(sample)
     

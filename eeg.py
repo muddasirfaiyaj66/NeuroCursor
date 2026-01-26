@@ -16,7 +16,7 @@ from matplotlib.gridspec import GridSpec
 import numpy as np
 
 # Configuration
-ESP32_IP = "10.131.191.211"  # ⚠️ CHANGE THIS TO YOUR ESP32 IP
+ESP32_IP = "NeuroCursor-esp.local"  # ⚠️ CHANGE THIS TO YOUR ESP32 IP
 WS_PORT = 81
 WS_URL = f"ws://{ESP32_IP}:{WS_PORT}"
 

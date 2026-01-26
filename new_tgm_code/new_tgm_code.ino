@@ -11,10 +11,18 @@
 #include <WiFi.h>
 #include <WebSocketsServer.h>
 #include <HardwareSerial.h>
+#include <ESPmDNS.h>
 
-/* ================= WIFI CONFIG ================= */
-const char* WIFI_SSID = "Motorola edge";
-const char* WIFI_PASSWORD = "1234@@@###";
+/* ================= WIFI LIST ================= */
+const char* wifiList[][2] = {
+  {"Motorola edge", "1234@###"},
+  {"Sagar", "9661"},
+  {"UIU-Faculty-Staff", "UIU#9876"},
+  {"UIU-STUDENT", "12345678"},
+  {"SHAHED", "987654321"}
+};
+const char* MDNS_NAME = "NeuroCursor-esp";
+const int WIFI_COUNT = sizeof(wifiList) / sizeof(wifiList[0]);
 
 /* ================= WEBSOCKET ================= */
 WebSocketsServer webSocket(81);
@@ -34,6 +42,8 @@ HardwareSerial TGAMSerial(1);
 #define CODE_MEDITATION 0x05
 #define CODE_RAW_WAVE 0x80
 #define CODE_ASIC_EEG_POWER 0x83
+
+
 
 /* ================= DATA VARIABLES ================= */
 int poorSignalQuality = 200;
@@ -154,6 +164,7 @@ void loop() {
   
   // WiFi reconnect
   if (WiFi.status() != WL_CONNECTED) {
+    MDNS.end(); 
     Serial.println("WiFi lost! Reconnecting...");
     connectToWiFi();
   }
@@ -161,28 +172,61 @@ void loop() {
 
 /* ================= WIFI CONNECTION ================= */
 void connectToWiFi() {
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
-  
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);
+  delay(200);
+
+  Serial.println("Scanning WiFi networks...");
+  int n = WiFi.scanNetworks();
+
+  if (n == 0) {
+    Serial.println("❌ No WiFi networks found");
+    return;
   }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✓ WiFi Connected!");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-    Serial.println();
-  } else {
-    Serial.println("\n✗ WiFi Failed!");
-    Serial.println("Check SSID/Password and restart");
+
+  for (int i = 0; i < WIFI_COUNT; i++) {
+    for (int j = 0; j < n; j++) {
+      if (WiFi.SSID(j) == wifiList[i][0]) {
+        Serial.print("Connecting to ");
+        Serial.println(wifiList[i][0]);
+
+        WiFi.begin(wifiList[i][0], wifiList[i][1]);
+
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+          delay(500);
+          Serial.print(".");
+          attempts++;
+        }
+
+        if (WiFi.status() == WL_CONNECTED) {
+          Serial.println("\n✅ Connected!");
+          Serial.print("IP: ");
+          Serial.println(WiFi.localIP());
+
+         // -------- mDNS START --------
+          if (!MDNS.begin(MDNS_NAME)) {
+           Serial.println("❌ mDNS failed to start");
+          } else {
+            MDNS.addService("ws", "tcp", 81);
+            Serial.print("🌐 mDNS active: ");
+            Serial.print(MDNS_NAME);
+            Serial.println(".local");
+          }
+  // ----------------------------
+
+          Serial.println();
+          return;
+        } else {
+          Serial.println("\n❌ Failed, trying next...");
+        }
+      }
+    }
   }
+
+  Serial.println("⚠️ Could not connect to any WiFi");
 }
+
 
 /* ================= READ TGAM PACKET ================= */
 bool readTGAMPacket() {

@@ -14,7 +14,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # Configuration
-ESP32_IP = "10.131.191.211"  # ⚠️ CHANGE THIS
+ESP32_IP = "NeuroCursor-esp.local"  # ⚠️ CHANGE THIS
 WS_PORT = 81
 WS_URL = f"ws://{ESP32_IP}:{WS_PORT}"
 
