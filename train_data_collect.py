@@ -312,11 +312,8 @@ class TrainingApp:
         samples_per_dir = self.samples_var.get()
         DISPLAY_TIME = self.time_var.get()
         
-        # Create sequence: Target -> Idle
+        # Create sequence: Only selected direction, no IDLE
         sequence = [direction] * samples_per_dir
-        if direction != "IDLE":
-             sequence.extend(["IDLE"] * samples_per_dir)
-        
         total_trials = len(sequence)
         
         # Set specific filename for this step
@@ -442,9 +439,10 @@ class TrainingApp:
             current_trial = i + 1
             current_direction = direction
             
-            # Update UI
+
+            # Update UI for direction (including IDLE)
             self.root.after(0, self.update_training_ui, direction)
-            
+
             # Wait and collect (check pause during wait)
             start_time = time.time()
             while time.time() - start_time < DISPLAY_TIME:
@@ -457,17 +455,22 @@ class TrainingApp:
             # Collect data sample
             if is_training:
                 self.collect_sample(direction)
-            
-            # Rest period
-            self.root.after(0, lambda: self.arrow_label.config(text="Rest", fg="#7f8c8d"))
-            
-            rest_start = time.time()
-            while time.time() - rest_start < REST_TIME:
-                if not is_training: break
-                while is_paused and is_training:
-                    time.sleep(0.5)
-                    rest_start += 0.5
-                time.sleep(0.1)
+
+            # Only show Rest period in full training mode (not step-by-step)
+            if getattr(self, 'step_dir_var', None) is not None and self.step_dir_var.get() == direction:
+                # step-by-step mode: skip rest
+                pass
+            else:
+                # full training mode: show Rest
+                self.root.after(0, lambda: self.arrow_label.config(text="Rest", fg="#7f8c8d"))
+                self.root.after(0, lambda: self.progress_label.config(text=f"Progress: {current_trial}/{total_trials} - Resting"))
+                rest_start = time.time()
+                while time.time() - rest_start < REST_TIME:
+                    if not is_training: break
+                    while is_paused and is_training:
+                        time.sleep(0.5)
+                        rest_start += 0.5
+                    time.sleep(0.1)
         
         # Training complete
         if is_training:

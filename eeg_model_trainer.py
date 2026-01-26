@@ -8,8 +8,9 @@ import numpy as np
 import pickle
 from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+# Label encoding for XGBoost
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -23,6 +24,7 @@ print("="*70)
 def find_latest_training_file():
     """Find the most recent training data CSV file"""
     files = list(Path('.').glob('eeg_training_*.csv'))
+    files += list(Path('.').glob('merged_training_*.csv'))
     if not files:
         return None
     # Sort by modification time, return most recent
@@ -121,6 +123,10 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 print(f"Training samples: {len(X_train)}")
+
+# Label encoding for XGBoost (after y_train is defined)
+le = LabelEncoder()
+le.fit(y_train)
 print(f"Testing samples: {len(X_test)}")
 
 # Standardize features (important for ML models)
@@ -130,19 +136,22 @@ X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
 # Train Random Forest Classifier
-print("\n🌲 Training Random Forest Classifier...")
-model = RandomForestClassifier(
-    n_estimators=300,      
-    max_depth=25,          
-    min_samples_split=4,
-    min_samples_leaf=1,
-    class_weight='balanced', # Crucial for handling 'CLICK' and 'IDLE' samples
-    random_state=42,
-    n_jobs=-1              
-)
 
-model.fit(X_train_scaled, y_train)
-print("✅ Model trained with Signal Averaging and Balanced Weights!")
+print("\n🔍 Tuning Random Forest hyperparameters with GridSearchCV...")
+param_grid = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [10, 20, 25, None],
+    'min_samples_split': [2, 4, 8],
+    'min_samples_leaf': [1, 2, 4],
+    'class_weight': ['balanced'],
+    'random_state': [42],
+    'n_jobs': [-1]
+}
+grid_search = GridSearchCV(RandomForestClassifier(), param_grid, cv=3, n_jobs=-1, verbose=1)
+grid_search.fit(X_train_scaled, y_train)
+model = grid_search.best_estimator_
+print(f"✅ Best parameters: {grid_search.best_params_}")
+print("✅ Model trained with optimized hyperparameters!")
 
 # Evaluate model
 print("\n📈 Evaluating model...")
@@ -223,6 +232,7 @@ for bar, score in zip(bars, scores):
 
 plt.tight_layout()
 
+from sklearn.svm import SVC
 # Save visualization
 viz_filename = f"model_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
 plt.savefig(viz_filename, dpi=150, bbox_inches='tight')
@@ -232,6 +242,11 @@ plt.show()
 
 # Save model and scaler
 print("\n💾 Saving trained model...")
+try:
+    from xgboost import XGBClassifier
+    xgb_installed = True
+except ImportError:
+    xgb_installed = False
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 model_filename = f"eeg_model_{timestamp}.pkl"
 
@@ -250,6 +265,79 @@ model_package = {
 with open(model_filename, 'wb') as f:
     pickle.dump(model_package, f)
 
+# Model comparison setup
+models = {}
+
+# Random Forest with GridSearch
+print("\n🔍 Tuning Random Forest hyperparameters with GridSearchCV...")
+param_grid = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [10, 20, 25, None],
+    'min_samples_split': [2, 4, 8],
+    'min_samples_leaf': [1, 2, 4],
+    'class_weight': ['balanced'],
+    'random_state': [42],
+    'n_jobs': [-1]
+}
+grid_search = GridSearchCV(RandomForestClassifier(), param_grid, cv=3, n_jobs=-1, verbose=1)
+grid_search.fit(X_train_scaled, y_train)
+models['RandomForest'] = grid_search.best_estimator_
+print(f"✅ RF Best parameters: {grid_search.best_params_}")
+
+# SVM
+print("\n🔍 Training SVM (RBF kernel)...")
+svm_model = SVC(kernel='rbf', probability=True, class_weight='balanced', random_state=42)
+svm_model.fit(X_train_scaled, y_train)
+models['SVM'] = svm_model
+print("✅ SVM trained!")
+
+
+# XGBoost (if installed)
+if xgb_installed:
+    print("\n🔍 Training XGBoost...")
+    y_train_enc = le.transform(y_train)
+    y_test_enc = le.transform(y_test)
+    xgb_model = XGBClassifier(n_estimators=200, max_depth=8, learning_rate=0.1, use_label_encoder=False, eval_metric='mlogloss', random_state=42)
+    xgb_model.fit(X_train_scaled, y_train_enc)
+    models['XGBoost'] = (xgb_model, True)  # True means label encoded
+    print("✅ XGBoost trained!")
+else:
+    print("\n⚠️ XGBoost not installed. Skipping XGBoost model.")
+
+# Evaluate all models
+print("\n📈 Evaluating all models...")
+results = {}
+for name, model_info in models.items():
+    if name == 'XGBoost' and xgb_installed:
+        model, is_encoded = model_info
+        train_score = model.score(X_train_scaled, le.transform(y_train))
+        test_score = model.score(X_test_scaled, le.transform(y_test))
+        cv_scores = cross_val_score(model, X_train_scaled, le.transform(y_train), cv=5)
+        y_pred_enc = model.predict(X_test_scaled)
+        y_pred = le.inverse_transform(y_pred_enc)
+    else:
+        model = model_info if not isinstance(model_info, tuple) else model_info[0]
+        train_score = model.score(X_train_scaled, y_train)
+        test_score = model.score(X_test_scaled, y_test)
+        cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
+        y_pred = model.predict(X_test_scaled)
+    results[name] = {
+        'train_score': train_score,
+        'test_score': test_score,
+        'cv_score': cv_scores.mean(),
+        'cv_std': cv_scores.std(),
+        'y_pred': y_pred
+    }
+    print(f"\nModel: {name}")
+    print(f"  Training Accuracy: {train_score*100:.2f}%")
+    print(f"  Testing Accuracy:  {test_score*100:.2f}%")
+    print(f"  Cross-Val:         {cv_scores.mean()*100:.2f}% (+/- {cv_scores.std()*2*100:.2f}%)")
+    print(classification_report(y_test, y_pred))
+
+# Select best model by test accuracy
+best_model_name = max(results, key=lambda k: results[k]['test_score'])
+model = models[best_model_name] if not (best_model_name == 'XGBoost' and xgb_installed) else models[best_model_name][0]
+print(f"\n🏆 Best model: {best_model_name} (Test Accuracy: {results[best_model_name]['test_score']*100:.2f}%)")
 print(f"✅ Model saved: {model_filename}")
 
 # Prediction example
