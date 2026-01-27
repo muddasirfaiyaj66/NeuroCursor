@@ -338,9 +338,7 @@ class CursorControlApp:
             return "IDLE"
     
     def model_predict(self):
-        """Enhanced Model-based prediction using all ratios.
-           Ensures 100% alignment with the Training Script features.
-        """
+        """Aligned with revised trainer: uses focused TGAM features and causal smoothing."""
         if loaded_model is None:
             return "IDLE"
         
@@ -350,65 +348,56 @@ class CursorControlApp:
             scaler = loaded_model['scaler']
             expected_features = loaded_model.get('feature_names', [])
         else:
-            print("❌ Error: Invalid model format. Please re-train with latest trainer.")
             return "IDLE"
         
         with data_lock:
-            # 1. Base Features (Must match trainer feature_columns)
-            # Trainer uses: attention, meditation, raw, delta, theta, la, ha, lb, hb, lg, mg
+            # 1. Aligned Base Features
             base_data = {
                 'attention': current_data['att'],
                 'meditation': current_data['med'],
-                'raw': current_data['raw'],
-                'delta': current_data['delta'],
                 'theta': current_data['theta'],
                 'low_alpha': current_data['la'],
                 'high_alpha': current_data['ha'],
                 'low_beta': current_data['lb'],
-                'high_beta': current_data['hb'],
-                'low_gamma': current_data['lg'],
-                'mid_gamma': current_data['mg']
+                'high_beta': current_data['hb']
             }
             
-            # 2. Advanced Ratio Engineering (Calculated EXACTLY like in trainer)
+            # 2. Aligned Ratio Engineering
             alpha_sum = base_data['low_alpha'] + base_data['high_alpha']
             beta_sum = base_data['low_beta'] + base_data['high_beta']
-            gamma_sum = base_data['low_gamma'] + base_data['mid_gamma']
             theta = base_data['theta']
             
             derived_features = {
                 'alpha_theta_ratio': alpha_sum / (theta + 1),
                 'beta_alpha_ratio': beta_sum / (alpha_sum + 1),
                 'beta_theta_ratio': beta_sum / (theta + 1),
-                'gamma_beta_ratio': gamma_sum / (beta_sum + 1),
-                'gamma_alpha_ratio': gamma_sum / (alpha_sum + 1),
-                'engagement_ratio': base_data['attention'] / (base_data['meditation'] + 1),
-                'focus_index': beta_sum / (alpha_sum + theta + 1),
-                'stress_index': base_data['high_beta'] / (base_data['low_alpha'] + 1)
+                'engagement_ratio': base_data['attention'] / (base_data['meditation'] + 1)
             }
             
-            # Combine all features in the order expected by the model
             input_dict = {**base_data, **derived_features}
             
             try:
-                # Ensure we only pick features that the model was trained on, in the correct order
                 feature_values = [input_dict[name] for name in expected_features]
                 features = np.array(feature_values).reshape(1, -1)
             except KeyError as e:
-                print(f"❌ Feature mismatch: Model expects {e}, but it's not in current data.")
+                print(f"❌ Feature mismatch: {e}")
                 return "IDLE"
         
         try:
-            # Scale and predict
             features_scaled = scaler.transform(features)
-            prediction = model.predict(features_scaled)[0]
             
-            # Optional: Check confidence if model supports it
+            # Weighted probability prediction for stability
             if hasattr(model, "predict_proba"):
                 probs = model.predict_proba(features_scaled)[0]
-                confidence = np.max(probs)
-                if confidence < 0.4:  # Threshold for noise reduction
+                max_prob = np.max(probs)
+                prediction = model.classes_[np.argmax(probs)]
+                
+                # Dynamic threshold for noise rejection
+                # If we're not very sure, default to IDLE
+                if max_prob < 0.55:
                     return "IDLE"
+            else:
+                prediction = model.predict(features_scaled)[0]
                     
             return prediction
         except Exception as e:

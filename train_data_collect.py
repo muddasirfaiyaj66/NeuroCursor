@@ -56,7 +56,7 @@ class TrainingApp:
     def __init__(self, root):
         self.root = root
         self.root.title("🧠 EEG Training Data Collector")
-        self.root.geometry("850x950") # Increased height for new controls
+        self.root.geometry("850x880") # Optimized height
         self.current_filename = csv_filename
         self.root.configure(bg="#f0f0f0")
         self.root.resizable(True, True) # Allow resizing if needed
@@ -113,31 +113,31 @@ class TrainingApp:
                                   font=("Arial", 11), bg="white")
         self.beta_label.grid(row=1, column=3, padx=15, pady=5)
         
-        # Arrow display (main training area) - Reduced height slightly to save space
-        self.arrow_frame = tk.Frame(main_frame, bg="#2c3e50", relief="solid", bd=3, height=200)
-        self.arrow_frame.pack(pady=10, fill="both", expand=True)
+        # Arrow display (main training area)
+        self.arrow_frame = tk.Frame(main_frame, bg="#2c3e50", relief="solid", bd=3, height=180)
+        self.arrow_frame.pack(pady=5, fill="x")
         self.arrow_frame.pack_propagate(False)
         
         self.arrow_label = tk.Label(self.arrow_frame, text="Ready", 
-                                   font=("Arial", 80, "bold"), 
+                                   font=("Arial", 60, "bold"), 
                                    bg="#2c3e50", fg="white")
         self.arrow_label.pack(expand=True)
         
         # Progress
         progress_frame = tk.Frame(main_frame, bg="#f0f0f0")
-        progress_frame.pack(pady=10, fill="x")
+        progress_frame.pack(pady=5, fill="x")
         
         self.progress_label = tk.Label(progress_frame, 
                                        text=f"Progress: 0/{total_trials}", 
-                                       font=("Arial", 12), bg="#f0f0f0")
+                                       font=("Arial", 11), bg="#f0f0f0")
         self.progress_label.pack()
         
         self.progress_bar = ttk.Progressbar(progress_frame, length=600, mode='determinate')
-        self.progress_bar.pack(pady=5)
+        self.progress_bar.pack(pady=2)
         
         # Training Settings
         settings_frame = tk.Frame(main_frame, bg="white", relief="solid", bd=2)
-        settings_frame.pack(pady=10, fill="x")
+        settings_frame.pack(pady=5, fill="x")
         
         tk.Label(settings_frame, text="Session Settings:", font=("Segoe UI", 11, "bold"), 
                 bg="white").grid(row=0, column=0, columnspan=4, pady=5)
@@ -155,10 +155,15 @@ class TrainingApp:
         self.time_var = tk.IntVar(value=5)
         tk.Scale(settings_frame, from_=2, to=10, orient="horizontal", variable=self.time_var, bg="white", length=150).grid(row=1, column=3, padx=10, pady=5)
 
-        # Instructions
+        tk.Label(settings_frame, text="Session Mode:", font=("Segoe UI", 10), bg="white").grid(row=2, column=0, padx=10, pady=5)
+        self.session_mode_var = tk.StringVar(value="Ordered (With Idle)")
+        self.session_mode_menu = ttk.Combobox(settings_frame, textvariable=self.session_mode_var, 
+                                            values=["Ordered (With Idle)", "Full Randomized"], state="readonly", width=18)
+        self.session_mode_menu.grid(row=2, column=1, padx=10, pady=5)
+
         instructions = tk.Label(main_frame, 
-                              text="Instructions: Focus on the arrow and imagine the movement. Use PAUSE if you need a break.",
-                              font=("Segoe UI", 9), bg="#f0f0f0", fg="#7f8c8d", wraplength=600)
+                              text="Focus on the arrow and imagine movement. Manual buttons (L,R,U,D,C,I) record 1 sample.",
+                              font=("Segoe UI", 8), bg="#f0f0f0", fg="#7f8c8d", wraplength=700)
         instructions.pack(pady=2)
         
         # Control buttons
@@ -184,38 +189,49 @@ class TrainingApp:
                                     command=self.stop_training, state="disabled")
         self.stop_button.pack(side="left", padx=5)
 
-        # Action buttons
-        action_frame = tk.Frame(main_frame, bg="#f0f0f0")
-        action_frame.pack(pady=5)
+        # Collection Dashboard (Manual + Step-by-Step)
+        collect_frame = tk.LabelFrame(main_frame, text="🧠 Collection Tools", font=("Segoe UI", 10, "bold"), 
+                                     bg="white", relief="solid", bd=2, fg="#2c3e50")
+        collect_frame.pack(pady=5, fill="x")
 
-        self.click_button = tk.Button(action_frame, text="🖱️ MANUAL CLICK", 
-                                    font=("Segoe UI", 11, "bold"), bg="#8e44ad", 
-                                    fg="white", width=20, height=1,
-                                    command=self.manual_click)
-        self.click_button.pack(pady=5)
+        # Row 1: Manual recording buttons
+        manual_row = tk.Frame(collect_frame, bg="white")
+        manual_row.pack(pady=5, fill="x")
+        tk.Label(manual_row, text="Manual Capture:", font=("Segoe UI", 9, "bold"), bg="white").pack(side="left", padx=10)
         
-        # Step-by-Step Collection specific controls
-        step_frame = tk.Frame(main_frame, bg="white", relief="solid", bd=2)
-        step_frame.pack(pady=10, fill="x")
+        btn_config = [
+            ("L", "LEFT", "#3498db"), ("R", "RIGHT", "#e74c3c"), 
+            ("U", "UP", "#2ecc71"), ("D", "DOWN", "#f39c12"),
+            ("C", "CLICK", "#8e44ad"), ("I", "IDLE", "#95a5a6")
+        ]
         
-        tk.Label(step_frame, text="Step-by-Step Collection:", font=("Segoe UI", 11, "bold"), 
-                bg="white").grid(row=0, column=0, columnspan=4, pady=5)
+        for text, direct, color in btn_config:
+            btn = tk.Button(manual_row, text=text, font=("Segoe UI", 9, "bold"), 
+                           bg=color, fg="white", width=4, 
+                           command=lambda d=direct: self.collect_sample(d))
+            btn.pack(side="left", padx=2)
+
+        # Row 2: Step-by-Step + Merge
+        step_row = tk.Frame(collect_frame, bg="white")
+        step_row.pack(pady=5, fill="x")
         
-        tk.Label(step_frame, text="Direction:", font=("Segoe UI", 10), bg="white").grid(row=1, column=0, padx=5, pady=5)
+        tk.Label(step_row, text="Step Control:", font=("Segoe UI", 9, "bold"), bg="white").pack(side="left", padx=10)
         self.step_dir_var = tk.StringVar(value="LEFT")
-        self.step_dir_menu = ttk.Combobox(step_frame, textvariable=self.step_dir_var, 
-                                        values=DIRECTIONS, state="readonly", width=10)
-        self.step_dir_menu.grid(row=1, column=1, padx=5, pady=5)
+        self.step_dir_menu = ttk.Combobox(step_row, textvariable=self.step_dir_var, 
+                                        values=DIRECTIONS, state="readonly", width=8)
+        self.step_dir_menu.pack(side="left", padx=5)
         
-        self.step_start_btn = tk.Button(step_frame, text="Record Single Step", 
-                                      font=("Segoe UI", 10, "bold"), bg="#3498db", fg="white",
-                                      command=self.start_step_training)
-        self.step_start_btn.grid(row=1, column=2, padx=5, pady=5)
+        self.step_start_btn = tk.Button(step_row, text="Record Step", font=("Segoe UI", 9, "bold"), 
+                                       bg="#3498db", fg="white", command=self.start_step_training)
+        self.step_start_btn.pack(side="left", padx=5)
         
-        self.merge_btn = tk.Button(step_frame, text="Merge All Steps to CSV", 
-                                 font=("Segoe UI", 10, "bold"), bg="#9b59b6", fg="white",
-                                 command=self.merge_data)
-        self.merge_btn.grid(row=1, column=3, padx=5, pady=5)
+        self.merge_btn = tk.Button(step_row, text="Merge All CSVs", font=("Segoe UI", 9, "bold"), 
+                                 bg="#9b59b6", fg="white", command=self.merge_data)
+        self.merge_btn.pack(side="left", padx=5)
+
+        self.click_button = tk.Button(step_row, text="MOUSE CLICK TEST", font=("Segoe UI", 9), 
+                                    bg="#34495e", fg="white", command=self.manual_click)
+        self.click_button.pack(side="left", padx=15)
         
         # Start WebSocket and update loop
         self.update_ui()
@@ -275,14 +291,20 @@ class TrainingApp:
             if not response:
                 return
         
-        # Create ordered sequence: Action -> Idle -> Action -> Idle...
+        # Create sequence based on mode
         sequence = []
-        # Filter directions to avoid double IDLE blocks
-        active_directions = [d for d in DIRECTIONS if d != "IDLE"]
+        mode = self.session_mode_var.get()
         
-        for direction in active_directions:
-            sequence.extend([direction] * samples_per_dir)
-            sequence.extend(["IDLE"] * samples_per_dir)
+        if mode == "Full Randomized":
+            for direction in DIRECTIONS:
+                sequence.extend([direction] * samples_per_dir)
+            random.shuffle(sequence)
+        else:
+            # Ordered mode: Action -> Idle -> Action -> Idle...
+            active_directions = [d for d in DIRECTIONS if d != "IDLE"]
+            for direction in active_directions:
+                sequence.extend([direction] * samples_per_dir)
+                sequence.extend(["IDLE"] * samples_per_dir)
             
         total_trials = len(sequence)
         self.current_filename = csv_filename # Reset to default for full run
@@ -443,18 +465,25 @@ class TrainingApp:
             # Update UI for direction (including IDLE)
             self.root.after(0, self.update_training_ui, direction)
 
-            # Wait and collect (check pause during wait)
+            # Wait and collect multiple samples per direction
             start_time = time.time()
+            collection_interval = 0.2  # 200ms
+            last_collection = 0
+            
             while time.time() - start_time < DISPLAY_TIME:
                 if not is_training: break
+                
                 while is_paused and is_training:
                     time.sleep(0.5)
                     start_time += 0.5 # Offset start time to compensate for pause
-                time.sleep(0.1)
-
-            # Collect data sample
-            if is_training:
-                self.collect_sample(direction)
+                
+                # Continuous collection logic
+                current_now = time.time()
+                if current_now - last_collection >= collection_interval:
+                    self.collect_sample(direction)
+                    last_collection = current_now
+                    
+                time.sleep(0.05) # Fine-grained check for pause/stop
 
             # Only show Rest period in full training mode (not step-by-step)
             if getattr(self, 'step_dir_var', None) is not None and self.step_dir_var.get() == direction:

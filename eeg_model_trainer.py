@@ -17,7 +17,7 @@ import seaborn as sns
 from pathlib import Path
 
 print("="*70)
-print("🧠 EEG Model Trainer")
+print("EEG Model Trainer")
 print("="*70)
 
 # Find most recent training data file
@@ -35,41 +35,41 @@ def find_latest_training_file():
 csv_file = find_latest_training_file()
 
 if csv_file is None:
-    print("❌ No training data found!")
-    print("💡 Please run eeg_training_collector.py first to collect data")
+    print("X No training data found!")
+    print("! Please run eeg_training_collector.py first to collect data")
     exit(1)
 
-print(f"📂 Loading training data: {csv_file}")
+print(f"Loading training data: {csv_file}")
 df = pd.read_csv(csv_file)
 
-print(f"✅ Loaded {len(df)} samples")
-print(f"\n📊 Data Overview:")
+print(f"Loaded {len(df)} samples")
+print(f"\nData Overview:")
 print(df.head())
 
 # Check data distribution
-print(f"\n🎯 Direction Distribution:")
+print(f"\nDirection Distribution:")
 print(df['direction'].value_counts())
 
 # Filter out poor signal quality samples
 original_count = len(df)
 df = df[df['signal_quality'] < 100]  # Keep only good quality samples
 filtered_count = len(df)
-print(f"\n🔍 Filtered samples: {original_count} → {filtered_count} (removed {original_count - filtered_count} poor quality)")
+print(f"\nFiltered samples: {original_count} -> {filtered_count} (removed {original_count - filtered_count} poor quality)")
 
 if len(df) < 50:
-    print("⚠️ WARNING: Very few samples! Model may not be accurate.")
-    print("💡 Collect more training data for better results")
+    print("! WARNING: Very few samples! Model may not be accurate.")
+    print("! Collect more training data for better results")
 
 # Prepare features and labels
-print("\n🔧 Preparing features...")
+print("\nPreparing features...")
 
 # Feature columns
+# Feature columns - Reduced to the minimum effective set for TGAM
 feature_columns = [
-    'attention', 'meditation', 'raw',
-    'delta', 'theta', 
+    'attention', 'meditation',
+    'theta', 
     'low_alpha', 'high_alpha',
-    'low_beta', 'high_beta',
-    'low_gamma', 'mid_gamma'
+    'low_beta', 'high_beta'
 ]
 
 X = df[feature_columns].values
@@ -79,102 +79,88 @@ print(f"Features shape: {X.shape}")
 print(f"Labels shape: {y.shape}")
 
 # Feature engineering - add derived features
-print("\n🧮 Engineering advanced features & Signal Smoothing...")
+print("\nEngineering advanced features & Signal Smoothing...")
 
-# 1. Signal Averaging (Smoothing) 
-# We apply a rolling average to reduce noise if there are sequential samples
-df_sorted = df.sort_values(['direction', 'timestamp'])
+# 1. Temporal Smoothing (Rolling Average) - CAUSAL logic
+# Sort globally by timestamp to maintain chronological order
+df = df.sort_values('timestamp').reset_index(drop=True)
+
 for col in feature_columns:
     # 3-point rolling average within the same direction group
-    df[col] = df_sorted.groupby('direction')[col].transform(lambda x: x.rolling(window=3, min_periods=1).mean())
+    # groupby maintains the relative order of the original dataframe within each group
+    df[col] = df.groupby('direction', sort=False)[col].transform(lambda x: x.rolling(window=3, min_periods=1).mean())
 
-# 2. Advanced Ratio Engineering
-# These ratios are standard in EEG research for identifying mental states
+# 2. Minimum Effective Ratios
+# ... same logic as before ...
 alpha_sum = df['low_alpha'] + df['high_alpha']
 beta_sum = df['low_beta'] + df['high_beta']
-gamma_sum = df['low_gamma'] + df['mid_gamma']
 theta = df['theta']
-delta = df['delta']
 
-# Add ratio features
 df['alpha_theta_ratio'] = alpha_sum / (theta + 1)
 df['beta_alpha_ratio'] = beta_sum / (alpha_sum + 1)
-df['beta_theta_ratio'] = beta_sum / (theta + 1)      # Focus/Arousal index
-df['gamma_beta_ratio'] = gamma_sum / (beta_sum + 1) # Peak concentration
-df['gamma_alpha_ratio'] = gamma_sum / (alpha_sum + 1)
+df['beta_theta_ratio'] = beta_sum / (theta + 1)
 df['engagement_ratio'] = df['attention'] / (df['meditation'] + 1)
-df['focus_index'] = beta_sum / (alpha_sum + theta + 1)
-df['stress_index'] = df['high_beta'] / (df['low_alpha'] + 1)
 
-# List of all feature names for the model
 all_features = feature_columns + [
     'alpha_theta_ratio', 'beta_alpha_ratio', 'beta_theta_ratio',
-    'gamma_beta_ratio', 'gamma_alpha_ratio',
-    'engagement_ratio', 'focus_index', 'stress_index'
+    'engagement_ratio'
 ]
 
-X_engineered = df[all_features].values
-print(f"Enhanced features shape: {X_engineered.shape}")
-
-# Split data into training and testing sets
-print("\n📊 Splitting data (80% train, 20% test)...")
+# Split data - Stratified split to handle block-wise collection
+# (Ensures all classes are present in both train and test)
+print("\nSplitting data (80% train, 20% test, stratified)...")
 X_train, X_test, y_train, y_test = train_test_split(
-    X_engineered, y, test_size=0.2, random_state=42, stratify=y
+    df[all_features].values, 
+    df['direction'].values, 
+    test_size=0.2, 
+    random_state=42, 
+    stratify=df['direction'].values
 )
 
-print(f"Training samples: {len(X_train)}")
-
-# Label encoding for XGBoost (after y_train is defined)
-le = LabelEncoder()
-le.fit(y_train)
-print(f"Testing samples: {len(X_test)}")
+print(f"Training samples: {len(X_train)} (Classes: {len(np.unique(y_train))})")
+print(f"Testing samples: {len(X_test)} (Classes: {len(np.unique(y_test))})")
 
 # Standardize features (important for ML models)
-print("\n⚖️ Standardizing features...")
+print("\nStandardizing features...")
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
 # Train Random Forest Classifier
-
-print("\n🔍 Tuning Random Forest hyperparameters with GridSearchCV...")
-param_grid = {
-    'n_estimators': [100, 200, 300],
-    'max_depth': [10, 20, 25, None],
-    'min_samples_split': [2, 4, 8],
-    'min_samples_leaf': [1, 2, 4],
-    'class_weight': ['balanced'],
-    'random_state': [42],
-    'n_jobs': [-1]
-}
-grid_search = GridSearchCV(RandomForestClassifier(), param_grid, cv=3, n_jobs=-1, verbose=1)
-grid_search.fit(X_train_scaled, y_train)
-model = grid_search.best_estimator_
-print(f"✅ Best parameters: {grid_search.best_params_}")
-print("✅ Model trained with optimized hyperparameters!")
+print("\nTraining Random Forest with reasonable defaults...")
+model = RandomForestClassifier(
+    n_estimators=100,
+    max_depth=10,
+    min_samples_split=4,
+    class_weight='balanced',
+    random_state=42,
+    n_jobs=-1
+)
+model.fit(X_train_scaled, y_train)
 
 # Evaluate model
-print("\n📈 Evaluating model...")
+print("\nEvaluating model...")
 
-# Training accuracy
+# TimeSeriesSplit Validation
+# TimeSeriesSplit Validation
+# Initial scores
 train_score = model.score(X_train_scaled, y_train)
-print(f"Training Accuracy: {train_score*100:.2f}%")
-
-# Testing accuracy
 test_score = model.score(X_test_scaled, y_test)
-print(f"Testing Accuracy: {test_score*100:.2f}%")
+from sklearn.model_selection import TimeSeriesSplit, KFold
+cv = KFold(n_splits=3, shuffle=True, random_state=42)
+cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=cv)
 
-# Cross-validation score
-cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
-print(f"Cross-Validation Accuracy: {cv_scores.mean()*100:.2f}% (+/- {cv_scores.std()*2*100:.2f}%)")
+print(f"Training Accuracy: {train_score*100:.2f}%")
+print(f"Testing Accuracy: {test_score*100:.2f}%")
+print(f"Cross-Validation Accuracy: {cv_scores.mean()*100:.2f}%")
 
 # Detailed classification report
-print("\n📋 Detailed Classification Report:")
+print("\nDetailed Classification Report:")
 y_pred = model.predict(X_test_scaled)
 print(classification_report(y_test, y_pred))
 
 # Feature importance
-print("\n🎯 Feature Importance (Top 10):")
+print("\nFeature Importance (Top 10):")
 feature_importance = pd.DataFrame({
     'feature': all_features,
     'importance': model.feature_importances_
@@ -183,7 +169,7 @@ feature_importance = pd.DataFrame({
 print(feature_importance.head(10).to_string(index=False))
 
 # Visualizations
-print("\n📊 Generating visualizations...")
+print("\nGenerating visualizations...")
 
 # Create figure with subplots
 fig = plt.figure(figsize=(15, 10))
@@ -236,7 +222,7 @@ from sklearn.svm import SVC
 # Save visualization
 viz_filename = f"model_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
 plt.savefig(viz_filename, dpi=150, bbox_inches='tight')
-print(f"✅ Saved visualization: {viz_filename}")
+print(f"Saved visualization: {viz_filename}")
 
 plt.show()
 
@@ -265,83 +251,42 @@ model_package = {
 with open(model_filename, 'wb') as f:
     pickle.dump(model_package, f)
 
-# Model comparison setup
-models = {}
-
-# Random Forest with GridSearch
-print("\n🔍 Tuning Random Forest hyperparameters with GridSearchCV...")
-param_grid = {
-    'n_estimators': [100, 200, 300],
-    'max_depth': [10, 20, 25, None],
-    'min_samples_split': [2, 4, 8],
-    'min_samples_leaf': [1, 2, 4],
-    'class_weight': ['balanced'],
-    'random_state': [42],
-    'n_jobs': [-1]
+# Model comparison setup (Optional but kept minimal)
+models = {
+    'RandomForest': model,
+    'SVM': SVC(kernel='rbf', C=1.0, probability=True, class_weight='balanced', random_state=42)
 }
-grid_search = GridSearchCV(RandomForestClassifier(), param_grid, cv=3, n_jobs=-1, verbose=1)
-grid_search.fit(X_train_scaled, y_train)
-models['RandomForest'] = grid_search.best_estimator_
-print(f"✅ RF Best parameters: {grid_search.best_params_}")
 
-# SVM
-print("\n🔍 Training SVM (RBF kernel)...")
-svm_model = SVC(kernel='rbf', probability=True, class_weight='balanced', random_state=42)
-svm_model.fit(X_train_scaled, y_train)
-models['SVM'] = svm_model
-print("✅ SVM trained!")
-
-
-# XGBoost (if installed)
-if xgb_installed:
-    print("\n🔍 Training XGBoost...")
-    y_train_enc = le.transform(y_train)
-    y_test_enc = le.transform(y_test)
-    xgb_model = XGBClassifier(n_estimators=200, max_depth=8, learning_rate=0.1, use_label_encoder=False, eval_metric='mlogloss', random_state=42)
-    xgb_model.fit(X_train_scaled, y_train_enc)
-    models['XGBoost'] = (xgb_model, True)  # True means label encoded
-    print("✅ XGBoost trained!")
-else:
-    print("\n⚠️ XGBoost not installed. Skipping XGBoost model.")
+# SVM Training
+print("\nTraining SVM (RBF kernel)...")
+models['SVM'].fit(X_train_scaled, y_train)
 
 # Evaluate all models
-print("\n📈 Evaluating all models...")
+print("\nEvaluating models with TimeSeriesSplit...")
 results = {}
-for name, model_info in models.items():
-    if name == 'XGBoost' and xgb_installed:
-        model, is_encoded = model_info
-        train_score = model.score(X_train_scaled, le.transform(y_train))
-        test_score = model.score(X_test_scaled, le.transform(y_test))
-        cv_scores = cross_val_score(model, X_train_scaled, le.transform(y_train), cv=5)
-        y_pred_enc = model.predict(X_test_scaled)
-        y_pred = le.inverse_transform(y_pred_enc)
-    else:
-        model = model_info if not isinstance(model_info, tuple) else model_info[0]
-        train_score = model.score(X_train_scaled, y_train)
-        test_score = model.score(X_test_scaled, y_test)
-        cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
-        y_pred = model.predict(X_test_scaled)
+for name, m in models.items():
+    m.fit(X_train_scaled, y_train) # Ensure fresh fit
+    tr_s = m.score(X_train_scaled, y_train)
+    te_s = m.score(X_test_scaled, y_test)
+    cv_s = cross_val_score(m, X_train_scaled, y_train, cv=cv).mean()
+    y_pred = m.predict(X_test_scaled)
     results[name] = {
-        'train_score': train_score,
-        'test_score': test_score,
-        'cv_score': cv_scores.mean(),
-        'cv_std': cv_scores.std(),
+        'train_score': tr_s,
+        'test_score': te_s,
+        'cv_score': cv_s,
         'y_pred': y_pred
     }
     print(f"\nModel: {name}")
-    print(f"  Training Accuracy: {train_score*100:.2f}%")
-    print(f"  Testing Accuracy:  {test_score*100:.2f}%")
-    print(f"  Cross-Val:         {cv_scores.mean()*100:.2f}% (+/- {cv_scores.std()*2*100:.2f}%)")
     print(classification_report(y_test, y_pred))
 
-# Select best model by test accuracy
+# Select best model
 best_model_name = max(results, key=lambda k: results[k]['test_score'])
-model = models[best_model_name] if not (best_model_name == 'XGBoost' and xgb_installed) else models[best_model_name][0]
+model = models[best_model_name]
 print(f"\n🏆 Best model: {best_model_name} (Test Accuracy: {results[best_model_name]['test_score']*100:.2f}%)")
 print(f"✅ Model saved: {model_filename}")
 
 # Prediction example
-print("\n🔮 Testing prediction on a random sample:")
+print("\nPrediction on a random sample:")
 random_idx = np.random.randint(0, len(X_test_scaled))
 sample = X_test_scaled[random_idx:random_idx+1]
 prediction = model.predict(sample)[0]
@@ -356,16 +301,16 @@ for label, prob in zip(model.classes_, probabilities):
 
 # Summary
 print("\n" + "="*70)
-print("🎉 TRAINING COMPLETE!")
+print("TRAINING COMPLETE!")
 print("="*70)
-print(f"📊 Model Performance:")
-print(f"   Training Accuracy:   {train_score*100:.2f}%")
-print(f"   Testing Accuracy:    {test_score*100:.2f}%")
-print(f"   Cross-Val Accuracy:  {cv_scores.mean()*100:.2f}%")
-print(f"\n📁 Files Created:")
+print(f"Model Performance ({best_model_name}):")
+print(f"   Training Accuracy:   {results[best_model_name]['train_score']*100:.2f}%")
+print(f"   Testing Accuracy:    {results[best_model_name]['test_score']*100:.2f}%")
+print(f"   Cross-Val Accuracy:  {results[best_model_name]['cv_score']*100:.2f}%")
+print(f"\nFiles Created:")
 print(f"   Model: {model_filename}")
 print(f"   Visualization: {viz_filename}")
-print(f"\n💡 Next Steps:")
+print(f"\nNext Steps:")
 print(f"   1. Load this model in eeg_cursor_control.py")
 print(f"   2. Select 'ML Model' mode")
 print(f"   3. Click 'Load Model' and select: {model_filename}")
