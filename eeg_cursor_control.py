@@ -28,7 +28,6 @@ WS_PORT = 81
 WS_URL = f"ws://{ESP32_IP}:{WS_PORT}"
 
 # Control settings
-CONTROL_MODES = ["Threshold", "ML Model"]
 MOVEMENT_SPEED = 15  # pixels per command
 SMOOTHING_WINDOW = 5  # average last N predictions
 
@@ -43,9 +42,36 @@ ws_connected = False
 
 # Control state
 control_active = False
-control_mode = "Threshold"
 loaded_model = None
 prediction_buffer = deque(maxlen=SMOOTHING_WINDOW)
+
+# Feature smoothing buffers (matches training-time rolling average)
+FEATURE_SMOOTH_WINDOW = 3
+feature_buffers = {
+    'att': deque(maxlen=FEATURE_SMOOTH_WINDOW),
+    'med': deque(maxlen=FEATURE_SMOOTH_WINDOW),
+    'theta': deque(maxlen=FEATURE_SMOOTH_WINDOW),
+    'la': deque(maxlen=FEATURE_SMOOTH_WINDOW),
+    'ha': deque(maxlen=FEATURE_SMOOTH_WINDOW),
+    'lb': deque(maxlen=FEATURE_SMOOTH_WINDOW),
+    'hb': deque(maxlen=FEATURE_SMOOTH_WINDOW),
+}
+
+def get_smoothed_data():
+    """Get smoothed feature values (3-point rolling average)"""
+    smoothed = {}
+    for key, buffer in feature_buffers.items():
+        if len(buffer) > 0:
+            smoothed[key] = sum(buffer) / len(buffer)
+        else:
+            smoothed[key] = current_data.get(key, 0)
+    return smoothed
+
+def update_feature_buffers():
+    """Update feature buffers with current data"""
+    with data_lock:
+        for key in feature_buffers:
+            feature_buffers[key].append(current_data.get(key, 0))
 
 # Safety limits
 pyautogui.FAILSAFE = True  # Move mouse to corner to abort
@@ -108,24 +134,10 @@ class CursorControlApp:
                                   font=("Arial", 10), bg="white")
         self.beta_label.grid(row=2, column=1, padx=20, pady=3, sticky="w")
         
-        # Control mode selection
-        mode_frame = tk.Frame(main_frame, bg="white", relief="solid", bd=2)
-        mode_frame.pack(pady=10, fill="x")
-        
-        tk.Label(mode_frame, text="Control Mode:", font=("Arial", 11, "bold"), 
-                bg="white").grid(row=0, column=0, padx=10, pady=10)
-        
-        self.mode_var = tk.StringVar(value="Threshold")
-        for i, mode in enumerate(CONTROL_MODES):
-            rb = tk.Radiobutton(mode_frame, text=mode, variable=self.mode_var, 
-                               value=mode, font=("Arial", 10), bg="white",
-                               command=self.change_mode)
-            rb.grid(row=0, column=i+1, padx=10, pady=10)
-        
         if MODEL_AVAILABLE:
-            self.load_model_btn = tk.Button(mode_frame, text="📂 Load Model", 
+            self.load_model_btn = tk.Button(main_frame, text="📂 Load Model", 
                                            font=("Arial", 10), command=self.load_model)
-            self.load_model_btn.grid(row=0, column=3, padx=10, pady=10)
+            self.load_model_btn.pack(pady=10)
         
         # Settings
         settings_frame = tk.Frame(main_frame, bg="white", relief="solid", bd=2)
@@ -221,16 +233,6 @@ class CursorControlApp:
         
         self.root.after(100, self.update_ui)
     
-    def change_mode(self):
-        """Change control mode"""
-        global control_mode
-        control_mode = self.mode_var.get()
-        
-        if control_mode == "ML Model" and loaded_model is None:
-            messagebox.showwarning("Warning", "No model loaded! Using threshold mode.")
-            self.mode_var.set("Threshold")
-            control_mode = "Threshold"
-    
     def load_model(self):
         """Load trained model and its configuration"""
         global loaded_model
@@ -245,12 +247,15 @@ class CursorControlApp:
                 with open(filename, 'rb') as f:
                     loaded_model = pickle.load(f)
                 
-                # Check if it's the new model format (a dict) or old (just a model)
                 if isinstance(loaded_model, dict):
-                    print(f"✅ Loaded enhanced model from {loaded_model.get('training_date')}")
-                    print(f"Accuracy: {loaded_model.get('test_accuracy', 0)*100:.2f}%")
-                
-                messagebox.showinfo("Success", f"Model package loaded from {filename}")
+                    print(f"✅ Loaded enhanced model package from {filename}")
+                    print(f"   - Training Date: {loaded_model.get('training_date')}")
+                    print(f"   - Accuracy: {loaded_model.get('test_accuracy', 0)*100:.2f}%")
+                    print(f"   - Expected Features: {', '.join(loaded_model.get('feature_names', []))}")
+                    messagebox.showinfo("Success", f"Model package loaded!\nAccuracy: {loaded_model.get('test_accuracy', 0)*100:.2f}%")
+                else:
+                    print("⚠️ Loaded old model format (raw object). Stability not guaranteed.")
+                    messagebox.showwarning("Warning", "Old model format detected. Accuracy might be lower as scaler is missing.")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load model: {e}")
     
@@ -262,7 +267,7 @@ class CursorControlApp:
             messagebox.showerror("Error", "Please wait for WebSocket connection!")
             return
         
-        if control_mode == "ML Model" and loaded_model is None:
+        if loaded_model is None:
             messagebox.showerror("Error", "Please load a trained model first!")
             return
         
@@ -286,10 +291,18 @@ class CursorControlApp:
         """Main control loop"""
         while control_active:
             try:
-                if control_mode == "Threshold":
-                    direction = self.threshold_predict()
-                else:
-                    direction = self.model_predict()
+                # 1. Signal Quality Check (Double Condition)
+                with data_lock:
+                    sig_quality = current_data["sig"]
+                
+                if sig_quality > 50:
+                    direction = "IDLE"
+                    self.root.after(0, lambda: self.prediction_label.config(text="Poor Signal", fg="#e74c3c"))
+                    time.sleep(0.5)
+                    continue
+                
+                # 2. ML Prediction
+                direction = self.model_predict()
                 
                 # Smooth predictions
                 prediction_buffer.append(direction)
@@ -317,26 +330,6 @@ class CursorControlApp:
                 print(f"Control error: {e}")
                 time.sleep(0.5)
     
-    def threshold_predict(self):
-        """Threshold-based prediction"""
-        with data_lock:
-            la = current_data['la']
-            ha = current_data['ha']
-            lb = current_data['lb']
-            hb = current_data['hb']
-        
-        # Determine direction based on band dominance
-        if lb > hb + 5000:  # Left beta dominant
-            return "LEFT"
-        elif hb > lb + 5000:  # High beta dominant
-            return "RIGHT"
-        elif la > ha + 3000:  # Low alpha dominant
-            return "UP"
-        elif ha > la + 3000:  # High alpha dominant
-            return "DOWN"
-        else:
-            return "IDLE"
-    
     def model_predict(self):
         """Aligned with revised trainer: uses focused TGAM features and causal smoothing."""
         if loaded_model is None:
@@ -348,43 +341,60 @@ class CursorControlApp:
             scaler = loaded_model['scaler']
             expected_features = loaded_model.get('feature_names', [])
         else:
-            return "IDLE"
+            # Fallback for old models
+            model = loaded_model
+            scaler = None
+            expected_features = [
+                'attention', 'meditation', 'theta', 
+                'low_alpha', 'high_alpha', 'low_beta', 'high_beta'
+            ]
+        
+        # Update smoothing buffers with latest data
+        update_feature_buffers()
+        
+        # Get smoothed values (3-point rolling average, matches training)
+        smoothed = get_smoothed_data()
         
         with data_lock:
-            # 1. Aligned Base Features
-            base_data = {
-                'attention': current_data['att'],
-                'meditation': current_data['med'],
-                'theta': current_data['theta'],
-                'low_alpha': current_data['la'],
-                'high_alpha': current_data['ha'],
-                'low_beta': current_data['lb'],
-                'high_beta': current_data['hb']
-            }
-            
-            # 2. Aligned Ratio Engineering
-            alpha_sum = base_data['low_alpha'] + base_data['high_alpha']
-            beta_sum = base_data['low_beta'] + base_data['high_beta']
-            theta = base_data['theta']
-            
-            derived_features = {
-                'alpha_theta_ratio': alpha_sum / (theta + 1),
-                'beta_alpha_ratio': beta_sum / (alpha_sum + 1),
-                'beta_theta_ratio': beta_sum / (theta + 1),
-                'engagement_ratio': base_data['attention'] / (base_data['meditation'] + 1)
-            }
-            
-            input_dict = {**base_data, **derived_features}
-            
-            try:
-                feature_values = [input_dict[name] for name in expected_features]
-                features = np.array(feature_values).reshape(1, -1)
-            except KeyError as e:
-                print(f"❌ Feature mismatch: {e}")
-                return "IDLE"
+            sig_quality = current_data['sig']
+        
+        # 1. Aligned Base Features (using smoothed values)
+        base_data = {
+            'attention': smoothed['att'],
+            'meditation': smoothed['med'],
+            'theta': smoothed['theta'],
+            'low_alpha': smoothed['la'],
+            'high_alpha': smoothed['ha'],
+            'low_beta': smoothed['lb'],
+            'high_beta': smoothed['hb']
+        }
+        
+        # 2. Aligned Ratio Engineering
+        alpha_sum = base_data['low_alpha'] + base_data['high_alpha']
+        beta_sum = base_data['low_beta'] + base_data['high_beta']
+        theta = base_data['theta']
+        
+        derived_features = {
+            'alpha_theta_ratio': alpha_sum / (theta + 1),
+            'beta_alpha_ratio': beta_sum / (alpha_sum + 1),
+            'beta_theta_ratio': beta_sum / (theta + 1),
+            'engagement_ratio': base_data['attention'] / (base_data['meditation'] + 1)
+        }
+        
+        input_dict = {**base_data, **derived_features}
         
         try:
-            features_scaled = scaler.transform(features)
+            feature_values = [input_dict[name] for name in expected_features]
+            features = np.array(feature_values).reshape(1, -1)
+        except KeyError as e:
+            print(f"❌ Feature mismatch: {e}")
+            return "IDLE"
+
+        try:
+            if scaler:
+                features_scaled = scaler.transform(features)
+            else:
+                features_scaled = features
             
             # Weighted probability prediction for stability
             if hasattr(model, "predict_proba"):
@@ -393,7 +403,6 @@ class CursorControlApp:
                 prediction = model.classes_[np.argmax(probs)]
                 
                 # Dynamic threshold for noise rejection
-                # If we're not very sure, default to IDLE
                 if max_prob < 0.55:
                     return "IDLE"
             else:
