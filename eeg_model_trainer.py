@@ -64,12 +64,13 @@ if len(df) < 50:
 print("\nPreparing features...")
 
 # Feature columns
-# Feature columns - Reduced to the minimum effective set for TGAM
+# Feature columns - Focused on signals per user request
 feature_columns = [
     'attention', 'meditation',
-    'theta', 
     'low_alpha', 'high_alpha',
-    'low_beta', 'high_beta'
+    'low_beta', 'high_beta',
+    'norm_att', 'norm_med',
+    'norm_alpha', 'norm_beta'
 ]
 
 X = df[feature_columns].values
@@ -102,8 +103,7 @@ df['beta_theta_ratio'] = beta_sum / (theta + 1)
 df['engagement_ratio'] = df['attention'] / (df['meditation'] + 1)
 
 all_features = feature_columns + [
-    'alpha_theta_ratio', 'beta_alpha_ratio', 'beta_theta_ratio',
-    'engagement_ratio'
+    'beta_alpha_ratio', 'engagement_ratio'
 ]
 
 # Split data - Stratified split to handle block-wise collection
